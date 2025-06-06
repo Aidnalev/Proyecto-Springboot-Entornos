@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Gestión de Ideas</title>
+</head>
+<body>
+  <h1>Gestor de Ideas Personales</h1>
+  <p>Usuario: <span id="username"></span> <button id="logoutBtn">Cerrar sesión</button></p>
+
+  <h2>Filtrar ideas por estado</h2>
+  <select id="filtroEstado">
+    <option value="Todos">Todos</option>
+    <option value="Pendiente">Pendiente</option>
+    <option value="En progreso">En progreso</option>
+    <option value="Completada">Completada</option>
+  </select>
+
+  <h2>Agregar nueva idea</h2>
+  <form id="addIdeaForm">
+    <input type="text" id="ideaTitle" placeholder="Título" required />
+    <br />
+    <textarea id="ideaDescription" placeholder="Descripción" required></textarea>
+    <br />
+    <button type="submit">Agregar Idea</button>
+  </form>
+
+  <h2>Lista de Ideas</h2>
+  <ul id="ideasList"></ul>
+
+  <p id="msg" style="color:red;"></p>
+
+  <script>
+    const token = localStorage.getItem('authToken');
+    const usernameSpan = document.getElementById('username');
+    const msg = document.getElementById('msg');
+    const ideasList = document.getElementById('ideasList');
+    const addIdeaForm = document.getElementById('addIdeaForm');
+    const logoutBtn = document.getElementById('logoutBtn');
+    const filtroEstado = document.getElementById('filtroEstado');
+
+    let ideasCache = []; // Aquí guardamos las ideas para filtrar sin llamar al backend
+
+    if (!token) {
+      alert('No has iniciado sesión. Serás redirigido al login.');
+      window.location.href = 'login.html';
+    }
+
+    // Obtener el nombre real del backend
+    fetch('/api/auth/usuario/nombre', {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    .then(res => {
+      if (!res.ok) throw new Error('No se pudo obtener el nombre de usuario');
+      return res.json();
+    })
+    .then(data => {
+      usernameSpan.textContent = data.nombre;
+    })
+    .catch(err => {
+      console.error('Error al obtener nombre de usuario:', err);
+      usernameSpan.textContent = 'Invitado';
+    });
+
+    logoutBtn.addEventListener('click', () => {
+      localStorage.clear();
+      window.location.href = 'login.html';
+    });
+
+    // Formatea fecha ISO a formato legible dd/mm/yyyy hh:mm
+    function formatearFecha(fechaISO) {
+      const fecha = new Date(fechaISO);
+      const dia = String(fecha.getDate()).padStart(2, '0');
+      const mes = String(fecha.getMonth() + 1).padStart(2, '0');
+      const año = fecha.getFullYear();
+      return `${dia}/${mes}/${año}`;
+    }
+
+    // Mostrar ideas filtradas por estado seleccionado
+    function mostrarIdeasFiltradas() {
+      const estadoSeleccionado = filtroEstado.value;
+      ideasList.innerHTML = '';
+      msg.textContent = '';
+
+      let ideasFiltradas = ideasCache;
+      if (estadoSeleccionado !== 'Todos') {
+        ideasFiltradas = ideasCache.filter(idea => (idea.estado || 'Pendiente') === estadoSeleccionado);
+      }
+
+      if (ideasFiltradas.length === 0) {
+        ideasList.innerHTML = '<li>No hay ideas registradas para este estado</li>';
+        return;
+      }
+
+      ideasFiltradas.forEach(idea => {
+        const li = document.createElement('li');
+        li.dataset.id = idea.id;
+        li.dataset.estado = idea.estado || 'Pendiente';
+        li.innerHTML = `
+          <strong>${idea.titulo}</strong>
+          <label>Estado: 
+            <select class="estadoSelect" data-id="${idea.id}">
+              <option value="Pendiente" ${idea.estado === 'Pendiente' ? 'selected' : ''}>Pendiente</option>
+              <option value="En progreso" ${idea.estado === 'En progreso' ? 'selected' : ''}>En progreso</option>
+              <option value="Completada" ${idea.estado === 'Completada' ? 'selected' : ''}>Completada</option>
+            </select>
+          </label><br/>
+          <em>${idea.descripcion}</em><br/>
+          <small>Creado: ${formatearFecha(idea.fechaCreacion)}</small><br/>
+          <button class="editBtn">Editar</button>
+          <button class="deleteBtn">Eliminar</button>
+        `;
+        ideasList.appendChild(li);
+      });
+    }
+
+    // Función para obtener y mostrar las ideas (carga y guarda en cache)
+    async function loadIdeas() {
+      msg.textContent = '';
+      ideasList.innerHTML = '';
+
+      try {
+        const res = await fetch('/api/ideas', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) throw new Error('Error al cargar ideas');
+        const ideas = await res.json();
+
+        ideasCache = ideas; // guardamos para filtro
+        mostrarIdeasFiltradas();
+      } catch (error) {
+        msg.textContent = error.message;
+      }
+    }
+
+    // Crear idea
+    addIdeaForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      msg.textContent = '';
+
+      const title = document.getElementById('ideaTitle').value.trim();
+      const description = document.getElementById('ideaDescription').value.trim();
+
+      if (!title || !description) {
+        msg.textContent = 'Completa todos los campos';
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/ideas', {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            titulo: title,
+            descripcion: description,
+            estado: 'Pendiente'
+          })
+        });
+        if (!res.ok) throw new Error('Error al crear idea');
+        addIdeaForm.reset();
+        loadIdeas();
+      } catch (error) {
+        msg.textContent = error.message;
+      }
+    });
+
+    // Delegación para editar, eliminar y cambio de estado
+    ideasList.addEventListener('click', async (e) => {
+      if (e.target.classList.contains('deleteBtn')) {
+        const li = e.target.closest('li');
+        const id = li.dataset.id;
+        if (!confirm('¿Seguro que quieres eliminar esta idea?')) return;
+
+        try {
+          const res = await fetch(`/api/ideas/${id}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (!res.ok) throw new Error('Error al eliminar idea');
+          loadIdeas();
+        } catch (error) {
+          msg.textContent = error.message;
+        }
+      } 
+      else if (e.target.classList.contains('editBtn')) {
+        const li = e.target.closest('li');
+        const id = li.dataset.id;
+
+        const newTitle = prompt('Nuevo título:', li.querySelector('strong').textContent);
+        if (newTitle === null) return;
+        const newDesc = prompt('Nueva descripción:', li.querySelector('em').textContent);
+        if (newDesc === null) return;
+
+        // Obtener el estado actual del select
+        const estadoSelect = li.querySelector('.estadoSelect');
+        const newEstado = estadoSelect ? estadoSelect.value : 'Pendiente';
+
+        try {
+          const res = await fetch(`/api/ideas/${id}`, {
+            method: 'PUT',
+            headers: { 
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ 
+              titulo: newTitle.trim(), 
+              descripcion: newDesc.trim(),
+              estado: newEstado
+            })
+          });
+          if (!res.ok) throw new Error('Error al actualizar idea');
+          loadIdeas();
+        } catch (error) {
+          msg.textContent = error.message;
+        }
+      }
+    });
+
+    // Escuchar cambio de estado desde el select dentro de cada idea
+    ideasList.addEventListener('change', async (e) => {
+      if (e.target.classList.contains('estadoSelect')) {
+        const id = e.target.dataset.id;
+        const newEstado = e.target.value;
+
+        try {
+          const idea = ideasCache.find(i => i.id === parseInt(id));
+          if (!idea) throw new Error('Idea no encontrada');
+
+          const res = await fetch(`/api/ideas/${id}`, {
+            method: 'PUT',
+            headers: { 
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ 
+              titulo: idea.titulo,
+              descripcion: idea.descripcion,
+              estado: newEstado
+            })
+          });
+          if (!res.ok) throw new Error('Error al actualizar estado');
+          loadIdeas();
+        } catch (error) {
+          msg.textContent = error.message;
+        }
+      }
+    });
+
+    // Cuando cambia el filtro, mostrar ideas filtradas
+    filtroEstado.addEventListener('change', mostrarIdeasFiltradas);
+
+    // Cargar ideas al inicio
+    loadIdeas();
+  </script>
+</body>
+</html>
